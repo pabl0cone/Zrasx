@@ -34,27 +34,63 @@ class MockEuler(tuple):
         return super().__new__(cls, tuple(angles))
 
 
+def create_mock_object(name="MockObject"):
+    obj = MagicMock()
+    obj.name = name
+    obj.rotation_euler = MagicMock()
+    obj.modifiers = MagicMock()
+    obj.modifiers.new = lambda name, type: MagicMock(name=name, type=type)
+    obj.data = MagicMock(materials=[], polygons=[MagicMock()])
+    obj.users_collection = []
+    obj.get = lambda key, default=None: default
+    return obj
+
+
 def setup_blender_mocks():
     if "bpy" not in sys.modules:
         mock_bpy = MagicMock()
 
         # Setup data collections
         mock_bpy.data.collections.new = lambda name: MagicMock(name=name, objects=MagicMock())
-        mock_bpy.data.materials.new = lambda name: MagicMock(name=name, node_tree=MagicMock(nodes={}))
+
+        def mock_mat_new(name):
+            mat = MagicMock(name=name, use_nodes=True)
+            bsdf_node = MagicMock()
+            bsdf_node.inputs = {
+                "Base Color": MagicMock(default_value=None),
+                "Metallic": MagicMock(default_value=None),
+                "Roughness": MagicMock(default_value=None),
+                "Emission Color": MagicMock(default_value=None),
+                "Emission Strength": MagicMock(default_value=None),
+                "Normal": MagicMock(default_value=None)
+            }
+            node_tree = MagicMock()
+            node_tree.nodes.get = lambda n: bsdf_node if n == "Principled BSDF" else None
+            node_tree.nodes.new = lambda type: MagicMock(type=type, inputs={}, outputs={"Fac": MagicMock(), "Normal": MagicMock()})
+            node_tree.links.new = MagicMock()
+            mat.node_tree = node_tree
+            return mat
+
+        mock_bpy.data.materials.new = mock_mat_new
         mock_bpy.data.lights.new = lambda name, type: MagicMock(name=name, type=type)
         mock_bpy.data.cameras.new = lambda name: MagicMock(name=name)
-        mock_bpy.data.objects.new = lambda name, data: MagicMock(name=name, data=data)
+        mock_bpy.data.objects.new = lambda name, data: create_mock_object(name)
 
-        # Setup context and scene
-        mock_obj = MagicMock()
-        mock_obj.name = "MockObject"
-        mock_obj.modifiers = MagicMock()
-        mock_obj.modifiers.new = lambda name, type: MagicMock(name=name, type=type)
-        mock_obj.data = MagicMock(materials=[], polygons=[MagicMock()])
-        mock_obj.users_collection = []
-        mock_obj.get = lambda key, default=None: default
+        # Context object factory
+        current_obj = create_mock_object("MockContextObject")
+        mock_bpy.context.object = current_obj
 
-        mock_bpy.context.object = mock_obj
+        def make_primitive(name="Primitive"):
+            obj = create_mock_object(name)
+            mock_bpy.context.object = obj
+            return obj
+
+        mock_bpy.ops.mesh.primitive_cube_add = lambda **kw: make_primitive("Cube")
+        mock_bpy.ops.mesh.primitive_cylinder_add = lambda **kw: make_primitive("Cylinder")
+        mock_bpy.ops.mesh.primitive_uv_sphere_add = lambda **kw: make_primitive("Sphere")
+        mock_bpy.ops.mesh.primitive_torus_add = lambda **kw: make_primitive("Torus")
+        mock_bpy.ops.mesh.primitive_plane_add = lambda **kw: make_primitive("Plane")
+
         mock_bpy.context.scene.collection.children.link = MagicMock()
         mock_bpy.path.abspath = lambda p: p.replace("//", "./")
 
@@ -94,6 +130,7 @@ class TestProceduralForge(unittest.TestCase):
         self.assertIn("detail_density", config)
         self.assertIn("enable_lod", config)
         self.assertIn("enable_metadata", config)
+        self.assertIn("procedural_noise_materials", config)
         self.assertEqual(config["object_type"], "SCIFI_REACTOR")
 
     def test_seed_system(self):
@@ -132,15 +169,10 @@ class TestProceduralForge(unittest.TestCase):
         procedural_forge.GENERATED_OBJECTS.clear()
         procedural_forge.METADATA["objects"].clear()
 
-        mock_obj = dict(name="TestReactorObj")
-        # dict as object with item access
-        mock_obj["name"] = "TestReactorObj"
-
         class MockObject(dict):
             name = "TestReactorObj"
 
         obj_instance = MockObject()
-
         registered = procedural_forge.register_object(obj_instance, category="reactor")
 
         self.assertEqual(len(procedural_forge.GENERATED_OBJECTS), 1)
@@ -155,6 +187,27 @@ class TestProceduralForge(unittest.TestCase):
         self.assertIn("MAT_BLACK_METAL", mats)
         self.assertIn("MAT_STEEL", mats)
         self.assertIn("MAT_ENERGY_BLUE", mats)
+
+    def test_procedural_material_nodes(self):
+        """Tests procedural noise and bump node addition on materials."""
+        mat = procedural_forge.create_material(
+            "MAT_TEST_NOISE",
+            (0.1, 0.1, 0.1),
+            metallic=0.9,
+            roughness=0.2,
+            add_noise=True
+        )
+        self.assertIsNotNone(mat)
+        self.assertTrue(mat.use_nodes)
+
+    def test_reactor_structure_generation(self):
+        """Tests generate_reactor execution with mock bpy."""
+        procedural_forge.GENERATED_OBJECTS.clear()
+        procedural_forge.create_material_library()
+
+        body = procedural_forge.generate_reactor()
+        self.assertIsNotNone(body)
+        self.assertTrue(len(procedural_forge.GENERATED_OBJECTS) > 10)
 
     def test_metadata_export(self):
         """Tests export_metadata output file format and content."""

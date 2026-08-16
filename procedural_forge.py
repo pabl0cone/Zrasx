@@ -11,7 +11,6 @@
 #
 # Python / Blender
 # Designed as a foundation for large procedural projects.
-#
 # ============================================================
 
 import bpy
@@ -20,6 +19,7 @@ import random
 import os
 import json
 import hashlib
+from typing import Optional, Tuple, List, Dict, Any, Union
 
 from mathutils import Vector, Euler
 
@@ -28,7 +28,7 @@ from mathutils import Vector, Euler
 # CONFIGURATION
 # ============================================================
 
-CONFIG = {
+CONFIG: Dict[str, Any] = {
     "seed": 928371,
     "project_name": "PROCEDURAL_FORGE",
     "object_type": "SCIFI_REACTOR",
@@ -46,6 +46,7 @@ CONFIG = {
     "output_folder": "//procedural_output",
     "enable_lod": True,
     "enable_metadata": True,
+    "procedural_noise_materials": True,
 }
 
 
@@ -53,15 +54,15 @@ CONFIG = {
 # GLOBAL STATE
 # ============================================================
 
-RNG = random.Random(CONFIG["seed"])
+RNG: random.Random = random.Random(CONFIG["seed"])
 
-COLLECTIONS = {}
+COLLECTIONS: Dict[str, Any] = {}
 
-MATERIALS = {}
+MATERIALS: Dict[str, Any] = {}
 
-GENERATED_OBJECTS = []
+GENERATED_OBJECTS: List[Any] = []
 
-METADATA = {
+METADATA: Dict[str, Any] = {
     "generator": "Procedural Forge X",
     "version": "1.0",
     "seed": CONFIG["seed"],
@@ -73,27 +74,33 @@ METADATA = {
 # RANDOM HELPERS
 # ============================================================
 
-def rand(a, b):
+def rand(a: float, b: float) -> float:
+    """Returns a random float uniform value in interval [a, b]."""
     return RNG.uniform(a, b)
 
 
-def randi(a, b):
+def randi(a: int, b: int) -> int:
+    """Returns a random integer uniform value in interval [a, b]."""
     return RNG.randint(a, b)
 
 
-def chance(value):
+def chance(value: float) -> bool:
+    """Returns True with probability equal to value [0.0 - 1.0]."""
     return RNG.random() < value
 
 
-def choice(items):
+def choice(items: List[Any]) -> Any:
+    """Selects a random element from a sequence."""
     return RNG.choice(items)
 
 
-def sign():
+def sign() -> int:
+    """Returns -1 or 1 randomly."""
     return -1 if chance(0.5) else 1
 
 
-def random_vector(scale=1.0):
+def random_vector(scale: float = 1.0) -> Vector:
+    """Generates a random 3D vector with coordinates in [-scale, scale]."""
     return Vector((
         rand(-scale, scale),
         rand(-scale, scale),
@@ -101,7 +108,8 @@ def random_vector(scale=1.0):
     ))
 
 
-def random_color():
+def random_color() -> Tuple[float, float, float]:
+    """Generates an RGB color tuple with random component intensities."""
     return (
         rand(0.02, 0.8),
         rand(0.02, 0.8),
@@ -113,17 +121,16 @@ def random_color():
 # HASH / SEED SYSTEM
 # ============================================================
 
-def seed_from_string(text):
-    value = int(
-        hashlib.sha256(
-            text.encode()
-        ).hexdigest()[:8],
+def seed_from_string(text: str) -> int:
+    """Generates a deterministic 32-bit integer seed from a string identifier."""
+    return int(
+        hashlib.sha256(text.encode()).hexdigest()[:8],
         16
     )
-    return value
 
 
-def set_seed(seed):
+def set_seed(seed: int) -> None:
+    """Updates global RNG instance and seed metadata across the generator."""
     global RNG
     RNG = random.Random(seed)
     CONFIG["seed"] = seed
@@ -134,7 +141,8 @@ def set_seed(seed):
 # SCENE CLEANUP
 # ============================================================
 
-def clear_scene():
+def clear_scene() -> None:
+    """Clears all objects and non-default collections from the active scene."""
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete(use_global=False)
 
@@ -147,7 +155,8 @@ def clear_scene():
 # COLLECTION SYSTEM
 # ============================================================
 
-def create_collection(name):
+def create_collection(name: str) -> Any:
+    """Creates or retrieves a scene collection by name."""
     if name in COLLECTIONS:
         return COLLECTIONS[name]
 
@@ -157,7 +166,8 @@ def create_collection(name):
     return collection
 
 
-def move_to_collection(obj, collection):
+def move_to_collection(obj: Any, collection: Any) -> None:
+    """Links an object to a target collection and unlinks from existing ones."""
     for c in list(obj.users_collection):
         c.objects.unlink(obj)
     collection.objects.link(obj)
@@ -167,8 +177,8 @@ def move_to_collection(obj, collection):
 # MATERIAL ENGINE
 # ============================================================
 
-def set_principled_bsdf_input(bsdf_node, input_name, value):
-    """Safely set a Principled BSDF node input across Blender versions (3.x & 4.x+)."""
+def set_principled_bsdf_input(bsdf_node: Any, input_name: str, value: Any) -> bool:
+    """Safely sets a Principled BSDF node input socket across Blender 3.x and 4.x+."""
     socket_mappings = {
         "Base Color": ["Base Color"],
         "Metallic": ["Metallic"],
@@ -184,14 +194,58 @@ def set_principled_bsdf_input(bsdf_node, input_name, value):
     return False
 
 
+def add_procedural_surface_noise(
+    mat: Any,
+    noise_scale: float = 18.0,
+    bump_strength: float = 0.06
+) -> None:
+    """
+    Adds a procedural noise texture and normal bump pipeline to a material
+    for micro-imperfections and realistic PBR surface texture.
+    """
+    if not CONFIG.get("procedural_noise_materials", True):
+        return
+    if not getattr(mat, "use_nodes", False) or not mat.node_tree:
+        return
+
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    bsdf = nodes.get("Principled BSDF")
+
+    if not bsdf:
+        return
+
+    try:
+        noise_node = nodes.new(type="ShaderNodeTexNoise")
+        noise_node.location = (-600, 0)
+        if "Scale" in noise_node.inputs:
+            noise_node.inputs["Scale"].default_value = noise_scale
+
+        bump_node = nodes.new(type="ShaderNodeBump")
+        bump_node.location = (-250, -100)
+        if "Strength" in bump_node.inputs:
+            bump_node.inputs["Strength"].default_value = bump_strength
+        if "Distance" in bump_node.inputs:
+            bump_node.inputs["Distance"].default_value = 0.05
+
+        links.new(noise_node.outputs.get("Fac", noise_node.outputs[0]), bump_node.inputs["Height"])
+
+        if "Normal" in bsdf.inputs:
+            links.new(bump_node.outputs["Normal"], bsdf.inputs["Normal"])
+    except Exception:
+        pass
+
+
 def create_material(
-    name,
-    base_color,
-    metallic=0.0,
-    roughness=0.5,
-    emission=None,
-    emission_strength=0.0
-):
+    name: str,
+    base_color: Tuple[float, float, float],
+    metallic: float = 0.0,
+    roughness: float = 0.5,
+    emission: Optional[Tuple[float, float, float]] = None,
+    emission_strength: float = 0.0,
+    add_noise: bool = True
+) -> Any:
+    """Creates and configures a Principled BSDF node material with optional PBR bump noise."""
     if name in MATERIALS:
         return MATERIALS[name]
 
@@ -209,127 +263,44 @@ def create_material(
             set_principled_bsdf_input(bsdf, "Emission Color", (*emission, 1))
             set_principled_bsdf_input(bsdf, "Emission Strength", emission_strength)
 
+        if add_noise and metallic > 0.3:
+            add_procedural_surface_noise(mat, noise_scale=rand(12.0, 25.0), bump_strength=0.05)
+
     MATERIALS[name] = mat
     return mat
 
 
-def create_material_library():
+def create_material_library() -> None:
+    """Initializes standard procedural PBR material library."""
     MATERIALS.clear()
 
-    create_material(
-        "MAT_BLACK_METAL",
-        (0.012, 0.015, 0.02),
-        0.95,
-        0.18
-    )
+    create_material("MAT_BLACK_METAL", (0.012, 0.015, 0.02), metallic=0.95, roughness=0.18)
+    create_material("MAT_DARK_STEEL", (0.06, 0.07, 0.08), metallic=0.9, roughness=0.25)
+    create_material("MAT_STEEL", (0.3, 0.32, 0.35), metallic=0.85, roughness=0.3)
+    create_material("MAT_TITANIUM", (0.18, 0.2, 0.22), metallic=0.95, roughness=0.2)
+    create_material("MAT_COPPER", (0.35, 0.09, 0.035), metallic=0.9, roughness=0.24)
+    create_material("MAT_GOLD", (0.55, 0.32, 0.06), metallic=0.9, roughness=0.2)
+    create_material("MAT_WHITE", (0.65, 0.67, 0.7), metallic=0.7, roughness=0.28)
+    create_material("MAT_RUBBER", (0.008, 0.008, 0.009), metallic=0.05, roughness=0.72, add_noise=False)
+    create_material("MAT_GLASS", (0.02, 0.12, 0.16), metallic=0.45, roughness=0.08, emission=(0.0, 0.25, 0.4), emission_strength=2.0)
 
-    create_material(
-        "MAT_DARK_STEEL",
-        (0.06, 0.07, 0.08),
-        0.9,
-        0.25
-    )
-
-    create_material(
-        "MAT_STEEL",
-        (0.3, 0.32, 0.35),
-        0.85,
-        0.3
-    )
-
-    create_material(
-        "MAT_TITANIUM",
-        (0.18, 0.2, 0.22),
-        0.95,
-        0.2
-    )
-
-    create_material(
-        "MAT_COPPER",
-        (0.35, 0.09, 0.035),
-        0.9,
-        0.24
-    )
-
-    create_material(
-        "MAT_GOLD",
-        (0.55, 0.32, 0.06),
-        0.9,
-        0.2
-    )
-
-    create_material(
-        "MAT_WHITE",
-        (0.65, 0.67, 0.7),
-        0.7,
-        0.28
-    )
-
-    create_material(
-        "MAT_RUBBER",
-        (0.008, 0.008, 0.009),
-        0.05,
-        0.72
-    )
-
-    create_material(
-        "MAT_GLASS",
-        (0.02, 0.12, 0.16),
-        0.45,
-        0.08,
-        (0.0, 0.25, 0.4),
-        2
-    )
-
-    create_material(
-        "MAT_ENERGY_BLUE",
-        (0.0, 0.04, 0.08),
-        0.25,
-        0.12,
-        (0.0, 0.35, 1.0),
-        8
-    )
-
-    create_material(
-        "MAT_ENERGY_CYAN",
-        (0.0, 0.07, 0.06),
-        0.2,
-        0.12,
-        (0.0, 1.0, 0.75),
-        10
-    )
-
-    create_material(
-        "MAT_ENERGY_PURPLE",
-        (0.07, 0.0, 0.12),
-        0.2,
-        0.12,
-        (0.6, 0.0, 1.0),
-        10
-    )
-
-    create_material(
-        "MAT_ENERGY_RED",
-        (0.1, 0.0, 0.0),
-        0.2,
-        0.15,
-        (1.0, 0.01, 0.0),
-        10
-    )
+    create_material("MAT_ENERGY_BLUE", (0.0, 0.04, 0.08), metallic=0.25, roughness=0.12, emission=(0.0, 0.35, 1.0), emission_strength=8.0, add_noise=False)
+    create_material("MAT_ENERGY_CYAN", (0.0, 0.07, 0.06), metallic=0.2, roughness=0.12, emission=(0.0, 1.0, 0.75), emission_strength=10.0, add_noise=False)
+    create_material("MAT_ENERGY_PURPLE", (0.07, 0.0, 0.12), metallic=0.2, roughness=0.12, emission=(0.6, 0.0, 1.0), emission_strength=10.0, add_noise=False)
+    create_material("MAT_ENERGY_RED", (0.1, 0.0, 0.0), metallic=0.2, roughness=0.15, emission=(1.0, 0.01, 0.0), emission_strength=10.0, add_noise=False)
 
 
 # ============================================================
 # MATERIAL ACCESS
 # ============================================================
 
-def mat(name):
-    return MATERIALS.get(
-        name,
-        MATERIALS.get("MAT_DARK_STEEL")
-    )
+def mat(name: str) -> Any:
+    """Retrieves a material by name from the material registry."""
+    return MATERIALS.get(name, MATERIALS.get("MAT_DARK_STEEL"))
 
 
-def energy_material():
+def energy_material() -> Any:
+    """Selects a random emissive energy material."""
     return choice([
         mat("MAT_ENERGY_BLUE"),
         mat("MAT_ENERGY_CYAN"),
@@ -338,7 +309,8 @@ def energy_material():
     ])
 
 
-def metal_material():
+def metal_material() -> Any:
+    """Selects a random metallic PBR material."""
     return choice([
         mat("MAT_BLACK_METAL"),
         mat("MAT_DARK_STEEL"),
@@ -351,10 +323,15 @@ def metal_material():
 # OBJECT REGISTRATION
 # ============================================================
 
-def register_object(obj, category="generic"):
+def register_object(obj: Any, category: str = "generic") -> Any:
+    """Registers a generated object into global state tracking and metadata list."""
     GENERATED_OBJECTS.append(obj)
-    obj["PF_CATEGORY"] = category
-    obj["PF_SEED"] = CONFIG["seed"]
+
+    try:
+        obj["PF_CATEGORY"] = category
+        obj["PF_SEED"] = CONFIG["seed"]
+    except Exception:
+        pass
 
     obj_name = getattr(obj, "name", str(obj))
     METADATA["objects"].append({
@@ -369,32 +346,25 @@ def register_object(obj, category="generic"):
 # MODIFIERS
 # ============================================================
 
-def add_bevel(
-    obj,
-    width=0.05,
-    segments=3
-):
-    modifier = obj.modifiers.new(
-        "PF_BEVEL",
-        "BEVEL"
-    )
+def add_bevel(obj: Any, width: float = 0.05, segments: int = 3) -> Any:
+    """Applies a Bevel modifier to smooth sharp polygon edges."""
+    modifier = obj.modifiers.new("PF_BEVEL", "BEVEL")
     modifier.width = width
     modifier.segments = segments
     return modifier
 
 
-def add_weighted_normals(obj):
+def add_weighted_normals(obj: Any) -> Any:
+    """Applies a Weighted Normal modifier to improve specular shading on bevels."""
     try:
-        modifier = obj.modifiers.new(
-            "PF_NORMALS",
-            "WEIGHTED_NORMAL"
-        )
+        modifier = obj.modifiers.new("PF_NORMALS", "WEIGHTED_NORMAL")
         return modifier
     except Exception:
         pass
 
 
-def smooth_mesh(obj):
+def smooth_mesh(obj: Any) -> None:
+    """Enables smooth shading across Blender 3.x and 4.x+ mesh objects."""
     if getattr(obj, "type", None) != 'MESH':
         return
 
@@ -419,23 +389,20 @@ def smooth_mesh(obj):
 # ============================================================
 
 def cube(
-    name,
-    location,
-    scale,
-    material,
-    bevel=0.05,
-    collection="FORGE_GEOMETRY"
-):
+    name: str,
+    location: Tuple[float, float, float],
+    scale: Tuple[float, float, float],
+    material: Any,
+    bevel: float = 0.05,
+    collection: str = "FORGE_GEOMETRY"
+) -> Any:
+    """Generates a scaled, bevelled primitive cube."""
     bpy.ops.mesh.primitive_cube_add(location=location)
     obj = bpy.context.object
     obj.name = name
     obj.scale = scale
 
-    bpy.ops.object.transform_apply(
-        location=False,
-        rotation=False,
-        scale=True
-    )
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
 
     if bevel:
         add_bevel(obj, bevel)
@@ -445,23 +412,20 @@ def cube(
     if material:
         obj.data.materials.append(material)
 
-    move_to_collection(
-        obj,
-        create_collection(collection)
-    )
-
+    move_to_collection(obj, create_collection(collection))
     return register_object(obj, "cube")
 
 
 def cylinder(
-    name,
-    location,
-    radius,
-    depth,
-    material,
-    vertices=32,
-    collection="FORGE_GEOMETRY"
-):
+    name: str,
+    location: Tuple[float, float, float],
+    radius: float,
+    depth: float,
+    material: Any,
+    vertices: int = 32,
+    collection: str = "FORGE_GEOMETRY"
+) -> Any:
+    """Generates a cylinder primitive with bevel and smooth shading."""
     bpy.ops.mesh.primitive_cylinder_add(
         vertices=vertices,
         radius=radius,
@@ -475,29 +439,21 @@ def cylinder(
     if material:
         obj.data.materials.append(material)
 
-    add_bevel(
-        obj,
-        min(radius * 0.12, 0.08),
-        3
-    )
-
+    add_bevel(obj, min(radius * 0.12, 0.08), 3)
     smooth_mesh(obj)
 
-    move_to_collection(
-        obj,
-        create_collection(collection)
-    )
-
+    move_to_collection(obj, create_collection(collection))
     return register_object(obj, "cylinder")
 
 
 def sphere(
-    name,
-    location,
-    scale,
-    material,
-    collection="FORGE_GEOMETRY"
-):
+    name: str,
+    location: Tuple[float, float, float],
+    scale: Tuple[float, float, float],
+    material: Any,
+    collection: str = "FORGE_GEOMETRY"
+) -> Any:
+    """Generates a UV sphere primitive with smooth shading."""
     bpy.ops.mesh.primitive_uv_sphere_add(
         segments=32,
         ring_count=20,
@@ -508,33 +464,26 @@ def sphere(
     obj.name = name
     obj.scale = scale
 
-    bpy.ops.object.transform_apply(
-        location=False,
-        rotation=False,
-        scale=True
-    )
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
 
     if material:
         obj.data.materials.append(material)
 
     smooth_mesh(obj)
 
-    move_to_collection(
-        obj,
-        create_collection(collection)
-    )
-
+    move_to_collection(obj, create_collection(collection))
     return register_object(obj, "sphere")
 
 
 def torus(
-    name,
-    location,
-    major,
-    minor,
-    material,
-    rotation=(0, 0, 0)
-):
+    name: str,
+    location: Tuple[float, float, float],
+    major: float,
+    minor: float,
+    material: Any,
+    rotation: Tuple[float, float, float] = (0, 0, 0)
+) -> Any:
+    """Generates a torus ring primitive with smooth shading."""
     bpy.ops.mesh.primitive_torus_add(
         major_radius=major,
         minor_radius=minor,
@@ -552,110 +501,63 @@ def torus(
 
     smooth_mesh(obj)
 
-    move_to_collection(
-        obj,
-        create_collection("FORGE_DETAILS")
-    )
-
+    move_to_collection(obj, create_collection("FORGE_DETAILS"))
     return register_object(obj, "ring")
 
 
 # ============================================================
-# PANEL GENERATOR
+# COMPONENT GENERATORS
 # ============================================================
 
-def panel(location, scale, rotation=(0, 0, 0)):
-    obj = cube(
-        "PF_PANEL",
-        location,
-        scale,
-        metal_material(),
-        bevel=min(scale) * 0.2
-    )
+def panel(location: Tuple[float, float, float], scale: Tuple[float, float, float], rotation: Tuple[float, float, float] = (0, 0, 0)) -> Any:
+    """Generates a metallic surface detail panel."""
+    obj = cube("PF_PANEL", location, scale, metal_material(), bevel=min(scale) * 0.2)
     obj.rotation_euler = rotation
     return obj
 
 
-# ============================================================
-# BOLT GENERATOR
-# ============================================================
-
-def bolt(location, scale=1.0):
-    obj = cylinder(
-        "PF_BOLT",
-        location,
-        0.035 * scale,
-        0.055 * scale,
-        metal_material(),
-        8
-    )
-    return obj
+def bolt(location: Tuple[float, float, float], scale: float = 1.0) -> Any:
+    """Generates an octagonal metallic industrial bolt."""
+    return cylinder("PF_BOLT", location, 0.035 * scale, 0.055 * scale, metal_material(), 8)
 
 
-# ============================================================
-# BOLT ARRAY
-# ============================================================
-
-def bolt_ring(radius, count, z=0):
+def bolt_ring(radius: float, count: int, z: float = 0.0) -> None:
+    """Arranges a circular pattern of bolts around a given radius."""
     for i in range(count):
         angle = math.tau * i / count
         x = math.cos(angle) * radius
         y = math.sin(angle) * radius
-
-        bolt(
-            (x, y, z),
-            rand(0.7, 1.4)
-        )
+        bolt((x, y, z), rand(0.7, 1.4))
 
 
-# ============================================================
-# ENERGY RING SYSTEM
-# ============================================================
-
-def energy_ring(z, radius, thickness):
-    return torus(
-        "PF_ENERGY_RING",
-        (0, 0, z),
-        radius,
-        thickness,
-        energy_material()
-    )
+def energy_ring(z: float, radius: float, thickness: float) -> Any:
+    """Generates an emissive core energy ring torus."""
+    return torus("PF_ENERGY_RING", (0, 0, z), radius, thickness, energy_material())
 
 
-def energy_core():
+def energy_core() -> Any:
+    """Generates a glowing energy core sphere enclosed in multiple concentric rings."""
     core_material = energy_material()
-
     core = sphere(
         "PF_CORE",
         (0, 0, 0),
-        (
-            rand(0.25, 0.42),
-            rand(0.25, 0.42),
-            rand(0.25, 0.55)
-        ),
+        (rand(0.25, 0.42), rand(0.25, 0.42), rand(0.25, 0.55)),
         core_material
     )
 
     for _ in range(randi(2, 5)):
-        energy_ring(
-            rand(-0.5, 0.5),
-            rand(0.42, 0.72),
-            rand(0.015, 0.045)
-        )
+        energy_ring(rand(-0.5, 0.5), rand(0.42, 0.72), rand(0.015, 0.045))
 
     return core
 
 
-# ============================================================
-# CABLE SYSTEM
-# ============================================================
-
-def cable(start, end, radius=0.025):
-    start = Vector(start)
-    end = Vector(end)
-    direction = end - start
+def cable(start: Tuple[float, float, float], end: Tuple[float, float, float], radius: float = 0.025) -> Any:
+    """Generates a flexible rubber connection cable spanning between two 3D positions."""
+    start_v = Vector(start)
+    end_v = Vector(end)
+    direction = end_v - start_v
     length = direction.length
-    middle = (start + end) / 2
+    middle = (start_v + end_v) / 2
 
     bpy.ops.mesh.primitive_cylinder_add(
         vertices=12,
@@ -673,19 +575,12 @@ def cable(start, end, radius=0.025):
     if mat_rubber:
         obj.data.materials.append(mat_rubber)
 
-    move_to_collection(
-        obj,
-        create_collection("FORGE_CABLES")
-    )
-
+    move_to_collection(obj, create_collection("FORGE_CABLES"))
     return register_object(obj, "cable")
 
 
-# ============================================================
-# RANDOM CABLE NETWORK
-# ============================================================
-
-def generate_cables():
+def generate_cables() -> None:
+    """Generates a complex network of procedural cables connecting core surfaces."""
     amount = int(5 + CONFIG["complexity"] * 3)
 
     for _ in range(amount):
@@ -698,106 +593,49 @@ def generate_cables():
         z1 = rand(-0.9, 0.9)
         z2 = rand(-0.9, 0.9)
 
-        p1 = (
-            math.cos(angle1) * radius1,
-            math.sin(angle1) * radius1,
-            z1
-        )
+        p1 = (math.cos(angle1) * radius1, math.sin(angle1) * radius1, z1)
+        p2 = (math.cos(angle2) * radius2, math.sin(angle2) * radius2, z2)
 
-        p2 = (
-            math.cos(angle2) * radius2,
-            math.sin(angle2) * radius2,
-            z2
-        )
-
-        cable(
-            p1,
-            p2,
-            rand(0.015, 0.035)
-        )
+        cable(p1, p2, rand(0.015, 0.035))
 
 
-# ============================================================
-# ANTENNA SYSTEM
-# ============================================================
-
-def antenna(angle, height):
+def antenna(angle: float, height: float) -> Any:
+    """Generates a vertical metallic antenna mast with an emissive tip light."""
     radius = 1.0
     x = math.cos(angle) * radius
     y = math.sin(angle) * radius
 
-    base = cylinder(
-        "PF_ANTENNA_BASE",
-        (x, y, 0),
-        0.1,
-        0.18,
-        metal_material()
-    )
-
-    pole = cylinder(
-        "PF_ANTENNA",
-        (x, y, height / 2),
-        0.025,
-        height,
-        metal_material(),
-        12
-    )
-
-    tip = sphere(
-        "PF_ANTENNA_LIGHT",
-        (x, y, height),
-        (0.07, 0.07, 0.07),
-        energy_material()
-    )
+    cylinder("PF_ANTENNA_BASE", (x, y, 0), 0.1, 0.18, metal_material())
+    pole = cylinder("PF_ANTENNA", (x, y, height / 2), 0.025, height, metal_material(), 12)
+    sphere("PF_ANTENNA_LIGHT", (x, y, height), (0.07, 0.07, 0.07), energy_material())
 
     return pole
 
 
-# ============================================================
-# EXTERNAL MODULE
-# ============================================================
-
-def external_module(angle, distance, z):
+def external_module(angle: float, distance: float, z: float) -> None:
+    """Generates an external sci-fi module attached to the reactor perimeter."""
     x = math.cos(angle) * distance
     y = math.sin(angle) * distance
 
     module = cube(
         "PF_MODULE",
         (x, y, z),
-        (
-            rand(0.15, 0.3),
-            rand(0.15, 0.3),
-            rand(0.25, 0.5)
-        ),
+        (rand(0.15, 0.3), rand(0.15, 0.3), rand(0.25, 0.5)),
         metal_material(),
         0.05
     )
-
     module.rotation_euler.z = angle
 
     for _ in range(randi(2, 5)):
         px = x + rand(-0.15, 0.15)
         py = y + rand(-0.15, 0.15)
         pz = z + rand(-0.2, 0.2)
-
-        sphere(
-            "PF_MODULE_LIGHT",
-            (px, py, pz),
-            (0.025, 0.025, 0.025),
-            energy_material()
-        )
+        sphere("PF_MODULE_LIGHT", (px, py, pz), (0.025, 0.025, 0.025), energy_material())
 
 
-# ============================================================
-# INDUSTRIAL DETAILS
-# ============================================================
-
-def generate_industrial_details():
-    amount = int(
-        10
-        * CONFIG["detail_density"]
-        * CONFIG["complexity"]
-    )
+def generate_industrial_details() -> None:
+    """Distributes industrial panels, bolts, external modules, and status lights."""
+    amount = int(10 * CONFIG["detail_density"] * CONFIG["complexity"])
 
     for _ in range(amount):
         angle = rand(0, math.tau)
@@ -807,55 +645,28 @@ def generate_industrial_details():
         x = math.cos(angle) * radius
         y = math.sin(angle) * radius
 
-        choice_type = choice([
-            "panel",
-            "bolt",
-            "module",
-            "light"
-        ])
+        choice_type = choice(["panel", "bolt", "module", "light"])
 
         if choice_type == "panel":
             panel(
                 (x, y, z),
-                (
-                    rand(0.03, 0.12),
-                    rand(0.1, 0.25),
-                    rand(0.1, 0.35)
-                ),
-                (
-                    rand(-0.2, 0.2),
-                    rand(-0.2, 0.2),
-                    angle
-                )
+                (rand(0.03, 0.12), rand(0.1, 0.25), rand(0.1, 0.35)),
+                (rand(-0.2, 0.2), rand(-0.2, 0.2), angle)
             )
-
         elif choice_type == "bolt":
-            bolt(
-                (x, y, z),
-                rand(0.7, 1.5)
-            )
-
+            bolt((x, y, z), rand(0.7, 1.5))
         elif choice_type == "module":
-            external_module(
-                angle,
-                radius,
-                z
-            )
-
+            external_module(angle, radius, z)
         else:
-            sphere(
-                "PF_STATUS_LIGHT",
-                (x, y, z),
-                (0.025, 0.025, 0.025),
-                energy_material()
-            )
+            sphere("PF_STATUS_LIGHT", (x, y, z), (0.025, 0.025, 0.025), energy_material())
 
 
 # ============================================================
-# REACTOR BODY
+# MAIN REACTOR GENERATOR
 # ============================================================
 
-def generate_reactor():
+def generate_reactor() -> Any:
+    """Generates a complete Sci-Fi Reactor model structure."""
     body_radius = rand(0.8, 1.25)
     body_height = rand(1.4, 2.4)
 
@@ -868,82 +679,39 @@ def generate_reactor():
         choice([12, 16, 24, 32])
     )
 
-    # Base
-    cylinder(
-        "PF_REACTOR_BASE",
-        (0, 0, -body_height / 2 - 0.12),
-        body_radius * 1.12,
-        0.22,
-        mat("MAT_BLACK_METAL"),
-        32
-    )
+    # Base & Top caps
+    cylinder("PF_REACTOR_BASE", (0, 0, -body_height / 2 - 0.12), body_radius * 1.12, 0.22, mat("MAT_BLACK_METAL"), 32)
+    cylinder("PF_REACTOR_TOP", (0, 0, body_height / 2 + 0.12), body_radius * 1.08, 0.18, mat("MAT_DARK_STEEL"), 32)
 
-    # Top
-    cylinder(
-        "PF_REACTOR_TOP",
-        (0, 0, body_height / 2 + 0.12),
-        body_radius * 1.08,
-        0.18,
-        mat("MAT_DARK_STEEL"),
-        32
-    )
-
-    # Central core
+    # Central glowing energy core
     energy_core()
 
-    # Main rings
+    # Perimeter rings
     ring_count = randi(3, 7)
     for i in range(ring_count):
-        z = (
-            -body_height / 2
-            + body_height
-            * i
-            / max(ring_count - 1, 1)
-        )
-
+        z = -body_height / 2 + body_height * i / max(ring_count - 1, 1)
         torus(
             "PF_BODY_RING",
             (0, 0, z),
             body_radius * rand(0.98, 1.08),
             rand(0.025, 0.065),
-            choice([
-                metal_material(),
-                energy_material()
-            ])
+            choice([metal_material(), energy_material()])
         )
 
-    # Bolts
-    bolt_ring(
-        body_radius * 1.02,
-        randi(8, 16),
-        body_height / 2 + 0.22
-    )
-
-    bolt_ring(
-        body_radius * 1.02,
-        randi(8, 16),
-        -body_height / 2 - 0.22
-    )
+    # Bolt rings
+    bolt_ring(body_radius * 1.02, randi(8, 16), body_height / 2 + 0.22)
+    bolt_ring(body_radius * 1.02, randi(8, 16), -body_height / 2 - 0.22)
 
     # External modules
     for _ in range(randi(4, 10)):
-        external_module(
-            rand(0, math.tau),
-            body_radius * rand(1.05, 1.45),
-            rand(-body_height * 0.4, body_height * 0.4)
-        )
+        external_module(rand(0, math.tau), body_radius * rand(1.05, 1.45), rand(-body_height * 0.4, body_height * 0.4))
 
     # Antennas
     for _ in range(randi(1, 5)):
-        antenna(
-            rand(0, math.tau),
-            rand(1.0, 2.2)
-        )
+        antenna(rand(0, math.tau), rand(1.0, 2.2))
 
-    # Cables
+    # Cables & Details
     generate_cables()
-
-    # Details
     generate_industrial_details()
 
     return body
@@ -953,11 +721,8 @@ def generate_reactor():
 # LOD SYSTEM
 # ============================================================
 
-def create_lod(obj, levels=3):
-    """
-    Creates Level of Detail (LOD) versions of a mesh object using Decimate modifier.
-    Returns a list of created LOD objects.
-    """
+def create_lod(obj: Any, levels: int = 3) -> List[Any]:
+    """Creates Level of Detail (LOD) decimated mesh duplicates."""
     if not CONFIG.get("enable_lod", True) or getattr(obj, "type", None) != 'MESH':
         return []
 
@@ -983,16 +748,15 @@ def create_lod(obj, levels=3):
 
 
 # ============================================================
-# FLOOR / STUDIO BACKDROP
+# STUDIO ENVIRONMENT
 # ============================================================
 
-def generate_floor():
-    """Generates a ground plane / studio backdrop with metallic panel material."""
+def generate_floor() -> Any:
+    """Generates ground plane / studio floor backdrop."""
     if not CONFIG.get("generate_floor", True):
         return None
 
     floor_mat = create_material("MAT_FLOOR", (0.02, 0.02, 0.025), metallic=0.8, roughness=0.4)
-
     bpy.ops.mesh.primitive_plane_add(size=30, location=(0, 0, -2.0))
     floor = bpy.context.object
     floor.name = "PF_FLOOR"
@@ -1004,12 +768,8 @@ def generate_floor():
     return floor
 
 
-# ============================================================
-# LIGHTING SYSTEM
-# ============================================================
-
-def generate_lighting():
-    """Generates a 3-point lighting setup (Key, Fill, Rim) with color temperature accent lights."""
+def generate_lighting() -> List[Any]:
+    """Generates 3-point studio lighting setup (Key, Fill, Rim)."""
     if not CONFIG.get("generate_lights", True):
         return []
 
@@ -1053,12 +813,8 @@ def generate_lighting():
     return lights
 
 
-# ============================================================
-# CAMERA SYSTEM
-# ============================================================
-
-def generate_camera():
-    """Generates and sets up the primary camera targeting the generated object."""
+def generate_camera() -> Any:
+    """Sets up primary isometric angle render camera."""
     if not CONFIG.get("generate_camera", True):
         return None
 
@@ -1077,11 +833,11 @@ def generate_camera():
 
 
 # ============================================================
-# METADATA EXPORT
+# METADATA & EXPORT
 # ============================================================
 
-def export_metadata(output_dir):
-    """Exports generation metadata (seed, config, object count, timestamp) to JSON."""
+def export_metadata(output_dir: str) -> None:
+    """Exports execution JSON report detailing seed, config, and generated objects."""
     if not CONFIG.get("enable_metadata", True):
         return
 
@@ -1098,12 +854,8 @@ def export_metadata(output_dir):
     print(f"[Procedural Forge] Metadata saved to: {filepath}")
 
 
-# ============================================================
-# RENDER & SAVE SYSTEM
-# ============================================================
-
-def render_and_save(output_dir):
-    """Configures scene render settings and saves render / .blend file."""
+def render_and_save(output_dir: str) -> None:
+    """Configures scene render settings and saves render image / .blend file."""
     os.makedirs(output_dir, exist_ok=True)
     scene = bpy.context.scene
 
@@ -1128,8 +880,8 @@ def render_and_save(output_dir):
 # PIPELINE EXECUTION
 # ============================================================
 
-def generate_scene(seed=None):
-    """Executes the full procedural generation pipeline for a given seed."""
+def generate_scene(seed: Optional[int] = None) -> None:
+    """Executes full procedural generation pipeline for a given seed."""
     if seed is not None:
         set_seed(seed)
     else:
@@ -1146,20 +898,19 @@ def generate_scene(seed=None):
 
     create_material_library()
 
-    # Core generation
+    # Core object generation
     main_body = generate_reactor()
 
     # LOD Generation
     if CONFIG.get("enable_lod", True) and main_body:
         create_lod(main_body)
 
-    # Environment & Lighting & Camera
+    # Studio Setup
     generate_floor()
     generate_lighting()
     generate_camera()
 
     output_dir = bpy.path.abspath(CONFIG.get("output_folder", "//procedural_output"))
-
     export_metadata(output_dir)
 
     if CONFIG.get("render", True) or CONFIG.get("save_blend", True):
@@ -1168,7 +919,8 @@ def generate_scene(seed=None):
     print(f"[Procedural Forge] Generation complete for seed {CONFIG['seed']}!")
 
 
-def main():
+def main() -> None:
+    """Main execution entry point supporting single model or batch mode generation."""
     if CONFIG.get("batch_mode", False):
         batch_count = CONFIG.get("batch_count", 1)
         base_seed = CONFIG["seed"]
